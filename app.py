@@ -19,6 +19,37 @@ def _make_filename(title, fallback='video'):
     safe = ''.join(c for c in (title or fallback) if c.isalnum() or c in ' _-').strip()[:60]
     return f"{safe or fallback}.mp4"
 
+def _pick_video(medias):
+    # 1. TikTok HD no-watermark mp4
+    for m in medias:
+        if m.get('type') == 'video' and (m.get('extension') or m.get('ext')) == 'mp4':
+            q = m.get('quality', '').lower()
+            if 'hd' in q and 'no_watermark' in q:
+                return m.get('url')
+
+    # 2. YouTube/other: mp4 video with audio (combined stream)
+    for m in medias:
+        mtype = m.get('type', '')
+        mext  = (m.get('extension') or m.get('ext') or '')
+        murl  = m.get('url', '')
+        if mtype == 'video' and mext == 'mp4' and murl and m.get('audioQuality'):
+            return murl
+
+    # 3. Any mp4 video
+    for m in medias:
+        mtype = m.get('type', '')
+        mext  = (m.get('extension') or m.get('ext') or '')
+        murl  = m.get('url', '')
+        if mtype == 'video' and mext == 'mp4' and murl:
+            return murl
+
+    # 4. Any video
+    for m in medias:
+        if m.get('type') == 'video' and m.get('url'):
+            return m.get('url')
+
+    return None
+
 def fetch_via_rapidapi(url):
     if not RAPIDAPI_KEY:
         print('[RapidAPI] No API key set')
@@ -37,37 +68,29 @@ def fetch_via_rapidapi(url):
             timeout=30,
         )
         print(f'[RapidAPI] HTTP {resp.status_code}')
-        print(f'[RapidAPI] Response: {resp.text[:300]}')
-
         if resp.status_code != 200:
+            print(f'[RapidAPI] Non-200: {resp.text[:200]}')
             return None
-
         data = resp.json()
     except Exception as e:
         print(f'[RapidAPI] Exception: {e}')
         return None
 
-    if data.get('status') != 'ok':
-        print(f'[RapidAPI] Bad status: {data.get("status")} | {data}')
+    if data.get('error'):
+        print('[RapidAPI] Error flag in response')
         return None
 
-    links = data.get('url') or []
-    video_url = None
-    for link in links:
-        ltype = link.get('type', '')
-        lext  = link.get('ext', '')
-        lqual = link.get('quality', '')
-        if lext == 'mp4' or 'video' in ltype or 'hd' in lqual.lower():
-            video_url = link.get('url')
-            break
-    if not video_url and links:
-        video_url = links[0].get('url')
+    medias = data.get('medias') or []
+    if not medias:
+        print('[RapidAPI] No medias array in response')
+        return None
 
+    video_url = _pick_video(medias)
     if not video_url:
-        print('[RapidAPI] No video URL found in response')
+        print('[RapidAPI] No suitable video found in medias')
         return None
 
-    title = data.get('title', 'video')
+    title = data.get('title') or 'video'
     print(f'[RapidAPI] Success: {title}')
     return {
         'url':       video_url,
@@ -132,7 +155,6 @@ def get_video():
     url    = extract_url(raw)
     result = None
 
-    # 1) Try RapidAPI
     if RAPIDAPI_KEY:
         try:
             result = fetch_via_rapidapi(url)
@@ -140,9 +162,8 @@ def get_video():
             print(f'[RapidAPI] Outer exception: {e}')
             result = None
 
-    # 2) Fallback: yt-dlp
     if not result:
-        print('[yt-dlp] Trying yt-dlp fallback...')
+        print('[yt-dlp] Trying fallback...')
         try:
             result = fetch_via_ytdlp(url)
         except yt_dlp.utils.DownloadError as e:
