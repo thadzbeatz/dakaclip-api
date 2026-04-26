@@ -20,19 +20,35 @@ def _make_filename(title, fallback='video'):
     return f"{safe or fallback}.mp4"
 
 def fetch_via_rapidapi(url):
+    if not RAPIDAPI_KEY:
+        print('[RapidAPI] No API key set')
+        return None
+
     headers = {
         'x-rapidapi-key':  RAPIDAPI_KEY,
         'x-rapidapi-host': RAPIDAPI_HOST,
         'Content-Type':    'application/json',
     }
-    resp = http.post(
-        f'https://{RAPIDAPI_HOST}/v1/social/autolink',
-        headers=headers,
-        json={'url': url},
-        timeout=30,
-    )
-    data = resp.json()
+    try:
+        resp = http.post(
+            f'https://{RAPIDAPI_HOST}/v1/social/autolink',
+            headers=headers,
+            json={'url': url},
+            timeout=30,
+        )
+        print(f'[RapidAPI] HTTP {resp.status_code}')
+        print(f'[RapidAPI] Response: {resp.text[:300]}')
+
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+    except Exception as e:
+        print(f'[RapidAPI] Exception: {e}')
+        return None
+
     if data.get('status') != 'ok':
+        print(f'[RapidAPI] Bad status: {data.get("status")} | {data}')
         return None
 
     links = data.get('url') or []
@@ -48,9 +64,11 @@ def fetch_via_rapidapi(url):
         video_url = links[0].get('url')
 
     if not video_url:
+        print('[RapidAPI] No video URL found in response')
         return None
 
     title = data.get('title', 'video')
+    print(f'[RapidAPI] Success: {title}')
     return {
         'url':       video_url,
         'title':     title,
@@ -98,7 +116,10 @@ def fetch_via_ytdlp(url):
 
 @app.route('/')
 def home():
-    return jsonify({'status': 'DakaClip API is running'})
+    return jsonify({
+        'status': 'DakaClip API is running',
+        'rapidapi_key_set': bool(RAPIDAPI_KEY),
+    })
 
 @app.route('/api/video', methods=['POST'])
 def get_video():
@@ -111,13 +132,17 @@ def get_video():
     url    = extract_url(raw)
     result = None
 
+    # 1) Try RapidAPI
     if RAPIDAPI_KEY:
         try:
             result = fetch_via_rapidapi(url)
-        except Exception:
+        except Exception as e:
+            print(f'[RapidAPI] Outer exception: {e}')
             result = None
 
+    # 2) Fallback: yt-dlp
     if not result:
+        print('[yt-dlp] Trying yt-dlp fallback...')
         try:
             result = fetch_via_ytdlp(url)
         except yt_dlp.utils.DownloadError as e:
