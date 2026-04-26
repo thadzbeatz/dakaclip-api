@@ -3,30 +3,62 @@ from flask_cors import CORS
 import yt_dlp
 import os
 import re
+import requests as http
 
 app = Flask(__name__)
 CORS(app)
 
+RAPIDAPI_KEY  = os.environ.get('RAPIDAPI_KEY', '')
+RAPIDAPI_HOST = 'social-download-all-in-one.p.rapidapi.com'
+
 def extract_url(text):
-    """Extract first URL from any text (handles share text like 'Check out this TikTok...')"""
     match = re.search(r'https?://[^\s]+', text)
     return match.group(0).rstrip("'\"") if match else text.strip()
 
-@app.route('/')
-def home():
-    return jsonify({'status': 'DakaClip API is running'})
+def _make_filename(title, fallback='video'):
+    safe = ''.join(c for c in (title or fallback) if c.isalnum() or c in ' _-').strip()[:60]
+    return f"{safe or fallback}.mp4"
 
-@app.route('/api/video', methods=['POST'])
-def get_video():
-    data = request.get_json(silent=True) or {}
-    raw = data.get('url', '').strip()
+def fetch_via_rapidapi(url):
+    headers = {
+        'x-rapidapi-key':  RAPIDAPI_KEY,
+        'x-rapidapi-host': RAPIDAPI_HOST,
+        'Content-Type':    'application/json',
+    }
+    resp = http.post(
+        f'https://{RAPIDAPI_HOST}/v1/social/autolink',
+        headers=headers,
+        json={'url': url},
+        timeout=30,
+    )
+    data = resp.json()
+    if data.get('status') != 'ok':
+        return None
 
-    if not raw:
-        return jsonify({'error': 'URL inahitajika'}), 400
+    links = data.get('url') or []
+    video_url = None
+    for link in links:
+        ltype = link.get('type', '')
+        lext  = link.get('ext', '')
+        lqual = link.get('quality', '')
+        if lext == 'mp4' or 'video' in ltype or 'hd' in lqual.lower():
+            video_url = link.get('url')
+            break
+    if not video_url and links:
+        video_url = links[0].get('url')
 
-    # Extract clean URL from share text
-    url = extract_url(raw)
+    if not video_url:
+        return None
 
+    title = data.get('title', 'video')
+    return {
+        'url':       video_url,
+        'title':     title,
+        'filename':  _make_filename(title),
+        'thumbnail': data.get('thumbnail'),
+    }
+
+def fetch_via_ytdlp(url):
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -36,49 +68,67 @@ def get_video():
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
         },
-        # Use Android client to bypass YouTube bot detection
         'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web'],
-            }
+            'youtube': {'player_client': ['android', 'web']},
         },
     }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+    if not info:
+        return None
 
-        if not info:
-            return jsonify({'error': 'Video haikupatikana'}), 404
+    video_url = info.get('url')
+    if not video_url:
+        for f in reversed(info.get('formats') or []):
+            if f.get('url') and f.get('protocol', '').startswith('http'):
+                video_url = f['url']
+                break
 
-        video_url = info.get('url')
-        if not video_url:
-            formats = info.get('formats') or []
-            for f in reversed(formats):
-                if f.get('url') and f.get('protocol', '').startswith('http'):
-                    video_url = f['url']
-                    break
+    if not video_url:
+        return None
 
-        if not video_url:
-            return jsonify({'error': 'Imeshindwa kupata URL ya video'}), 500
+    title = info.get('title') or info.get('id') or 'video'
+    return {
+        'url':       video_url,
+        'title':     title,
+        'filename':  _make_filename(title, info.get('id', 'video')),
+        'thumbnail': info.get('thumbnail'),
+    }
 
-        vid_id   = info.get('id') or 'video'
-        title    = info.get('title') or vid_id
-        safe     = ''.join(c for c in title if c.isalnum() or c in ' _-').strip()[:60]
-        filename = f"{safe or vid_id}.mp4"
+@app.route('/')
+def home():
+    return jsonify({'status': 'DakaClip API is running'})
 
-        return jsonify({
-            'url':       video_url,
-            'title':     title,
-            'filename':  filename,
-            'thumbnail': info.get('thumbnail'),
-        })
+@app.route('/api/video', methods=['POST'])
+def get_video():
+    data = request.get_json(silent=True) or {}
+    raw  = data.get('url', '').strip()
 
-    except yt_dlp.utils.DownloadError as e:
-        return jsonify({'error': str(e)}), 422
-    except Exception as e:
-        return jsonify({'error': f'Hitilafu: {str(e)}'}), 500
+    if not raw:
+        return jsonify({'error': 'URL inahitajika'}), 400
 
+    url    = extract_url(raw)
+    result = None
+
+    if RAPIDAPI_KEY:
+        try:
+            result = fetch_via_rapidapi(url)
+        except Exception:
+            result = None
+
+    if not result:
+        try:
+            result = fetch_via_ytdlp(url)
+        except yt_dlp.utils.DownloadError as e:
+            return jsonify({'error': str(e)}), 422
+        except Exception as e:
+            return jsonify({'error': f'Hitilafu: {str(e)}'}), 500
+
+    if not result or not result.get('url'):
+        return jsonify({'error': 'Imeshindwa kupata URL ya video'}), 500
+
+    return jsonify(result)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
