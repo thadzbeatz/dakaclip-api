@@ -201,7 +201,7 @@ def initiate_payment():
         token = get_clickpesa_token()
         print(f'[ClickPesa] Got token successfully')
         resp  = http.post(
-            f'{CLICKPESA_BASE_URL}/third-parties/payments/initiate-ussd-push',
+            f'{CLICKPESA_BASE_URL}/third-parties/payments/initiate-ussd-push-request',
             headers={
                 'Authorization': token,
                 'Content-Type':  'application/json',
