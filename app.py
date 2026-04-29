@@ -193,7 +193,7 @@ def initiate_payment():
         return jsonify({'error': 'Malipo hayapatikani kwa sasa. Wasiliana na msaada.'}), 503
 
     phone     = normalize_tz_phone(phone)
-    reference = f'DAKA-{uuid.uuid4().hex[:10].upper()}'
+    reference = f'DAKA{uuid.uuid4().hex[:10].upper()}'
     _payments[reference] = {'status': 'pending', 'tokens': tokens, 'amount': amount}
     print(f'[Payment] Initiating {reference}: {phone} TZS {amount} for {tokens} tokens')
 
