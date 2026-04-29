@@ -3,6 +3,7 @@ from flask_cors import CORS
 import yt_dlp
 import os
 import re
+import time
 import uuid
 import requests as http
 
@@ -16,14 +17,25 @@ CLICKPESA_CLIENT_ID = os.environ.get('CLICKPESA_CLIENT_ID', '')
 CLICKPESA_API_KEY   = os.environ.get('CLICKPESA_API_KEY', '')
 CLICKPESA_BASE_URL  = os.environ.get('CLICKPESA_BASE_URL', 'https://api.clickpesa.com')
 
-_payments = {}
+_payments       = {}
+_cp_token_cache = {'token': None, 'expires_at': 0}
 
-def clickpesa_headers():
-    return {
-        'Authorization': f'Bearer {CLICKPESA_API_KEY}',
-        'client-id':     CLICKPESA_CLIENT_ID,
-        'Content-Type':  'application/json',
-    }
+def get_clickpesa_token():
+    if _cp_token_cache['token'] and time.time() < _cp_token_cache['expires_at']:
+        return _cp_token_cache['token']
+    resp = http.post(
+        f'{CLICKPESA_BASE_URL}/third-parties/generate-token',
+        headers={
+            'api-key':   CLICKPESA_API_KEY,
+            'client-id': CLICKPESA_CLIENT_ID,
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    _cp_token_cache['token']      = data['token']
+    _cp_token_cache['expires_at'] = time.time() + 3540
+    return _cp_token_cache['token']
 
 def normalize_tz_phone(phone):
     phone = re.sub(r'[^\d]', '', phone)
@@ -186,23 +198,30 @@ def initiate_payment():
     print(f'[Payment] Initiating {reference}: {phone} TZS {amount} for {tokens} tokens')
 
     try:
-        resp = http.post(
-            f'{CLICKPESA_BASE_URL}/third-parties/requests/ussd-push',
-            headers=clickpesa_headers(),
+        token = get_clickpesa_token()
+        print(f'[ClickPesa] Got token successfully')
+        resp  = http.post(
+            f'{CLICKPESA_BASE_URL}/third-parties/payments/initiate-ussd-push',
+            headers={
+                'Authorization': token,
+                'Content-Type':  'application/json',
+            },
             json={
-                'amount':      amount,
-                'currency':    'TZS',
-                'phoneNumber': phone,
-                'orderId':     reference,
-                'description': f'DakaClip {tokens} tokens',
+                'amount':         str(amount),
+                'currency':       'TZS',
+                'orderReference': reference,
+                'phoneNumber':    phone,
             },
             timeout=30,
         )
         print(f'[ClickPesa] HTTP {resp.status_code}: {resp.text[:300]}')
+
         if resp.status_code not in (200, 201, 202):
             _payments[reference]['status'] = 'failed'
             return jsonify({'error': 'Imeshindwa kutuma ombi la malipo. Angalia namba ya simu na jaribu tena.'}), 502
+
         return jsonify({'reference': reference})
+
     except Exception as e:
         print(f'[ClickPesa] Exception: {e}')
         _payments[reference]['status'] = 'failed'
@@ -213,17 +232,18 @@ def payment_callback():
     data = request.get_json(silent=True) or {}
     print(f'[ClickPesa Callback] {data}')
     reference = (
-        data.get('orderId')
+        data.get('orderReference')
+        or data.get('orderId')
         or data.get('order_id')
         or data.get('reference')
         or ''
     )
     status = (data.get('status') or '').upper()
     if reference in _payments:
-        if status in ('COMPLETED', 'SUCCESS', 'SUCCESSFUL', 'PAID'):
+        if status in ('SUCCESS', 'SETTLED', 'PAYMENT RECEIVED'):
             _payments[reference]['status'] = 'completed'
             print(f'[Payment] {reference} COMPLETED')
-        elif status in ('FAILED', 'CANCELLED', 'EXPIRED', 'REJECTED'):
+        elif status in ('FAILED', 'CANCELLED', 'EXPIRED', 'REJECTED', 'PAYMENT FAILED'):
             _payments[reference]['status'] = 'failed'
             print(f'[Payment] {reference} FAILED ({status})')
     return jsonify({'received': True})
