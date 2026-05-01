@@ -17,8 +17,15 @@ CLICKPESA_CLIENT_ID = os.environ.get('CLICKPESA_CLIENT_ID', '')
 CLICKPESA_API_KEY   = os.environ.get('CLICKPESA_API_KEY', '')
 CLICKPESA_BASE_URL  = os.environ.get('CLICKPESA_BASE_URL', 'https://api.clickpesa.com')
 
+APP_SECRET = os.environ.get('APP_SECRET', 'DKC-7x2Pq9mRwL4nV8kJ3eZ5tY6uF1sA')
+
 _payments       = {}
 _cp_token_cache = {'token': None, 'expires_at': 0}
+
+def check_app_key():
+    if request.headers.get('X-App-Key') != APP_SECRET:
+        return jsonify({'error': 'Unauthorized'}), 401
+    return None
 
 def get_clickpesa_token():
     if _cp_token_cache['token'] and time.time() < _cp_token_cache['expires_at']:
@@ -157,6 +164,9 @@ def home():
 
 @app.route('/api/video', methods=['POST'])
 def get_video():
+    auth = check_app_key()
+    if auth: return auth
+
     data = request.get_json(silent=True) or {}
     raw  = data.get('url', '').strip()
     if not raw:
@@ -181,6 +191,9 @@ def get_video():
 
 @app.route('/api/payment/initiate', methods=['POST'])
 def initiate_payment():
+    auth = check_app_key()
+    if auth: return auth
+
     data   = request.get_json(silent=True) or {}
     phone  = data.get('phone', '').strip()
     amount = int(data.get('amount', 0))
@@ -247,17 +260,3 @@ def payment_callback():
             _payments[reference]['status'] = 'failed'
             print(f'[Payment] {reference} FAILED ({status})')
     return jsonify({'received': True})
-
-@app.route('/api/payment/status/<reference>', methods=['GET'])
-def payment_status(reference):
-    payment = _payments.get(reference)
-    if not payment:
-        return jsonify({'error': 'Malipo hayapatikani'}), 404
-    return jsonify({
-        'status': payment['status'],
-        'tokens': payment['tokens'] if payment['status'] == 'completed' else 0,
-    })
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
