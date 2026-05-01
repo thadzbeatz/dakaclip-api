@@ -56,10 +56,9 @@ def extract_url(text):
     match = re.search(r'https?://[^\s]+', text)
     return match.group(0).rstrip("'\"") if match else text.strip()
 
-# ── UNCHANGED from original ───────────────────────────────────────────────────
-def _make_filename(title, fallback='video', ext='mp4'):
+def _make_filename(title, fallback='video'):
     safe = ''.join(c for c in (title or fallback) if c.isalnum() or c in ' _-').strip()[:60]
-    return f"{safe or fallback}.{ext}"
+    return f"{safe or fallback}.mp4"
 
 def _pick_video(medias):
     for m in medias:
@@ -84,21 +83,7 @@ def _pick_video(medias):
             return m.get('url')
     return None
 
-# ── NEW: audio picker (does not affect video path) ────────────────────────────
-def _pick_audio(medias):
-    for ext_pref in ('mp3', 'm4a', 'aac'):
-        for m in medias:
-            mext = (m.get('extension') or m.get('ext') or '').lower()
-            if m.get('type') == 'audio' and mext == ext_pref and m.get('url'):
-                return m['url'], ext_pref
-    for m in medias:
-        if m.get('type') == 'audio' and m.get('url'):
-            ext = (m.get('extension') or m.get('ext') or 'm4a').lower()
-            return m['url'], ext
-    return None, None
-
-# ── fetch_via_rapidapi — video path IDENTICAL to original ─────────────────────
-def fetch_via_rapidapi(url, fmt='video'):
+def fetch_via_rapidapi(url):
     if not RAPIDAPI_KEY:
         return None
     headers = {
@@ -124,23 +109,10 @@ def fetch_via_rapidapi(url, fmt='video'):
     medias = data.get('medias') or []
     if not medias:
         return None
-    title = data.get('title') or 'video'
-
-    if fmt == 'audio':
-        audio_url, audio_ext = _pick_audio(medias)
-        if not audio_url:
-            return None
-        return {
-            'url':       audio_url,
-            'title':     title,
-            'filename':  _make_filename(title, 'audio', audio_ext),
-            'thumbnail': data.get('thumbnail'),
-        }
-
-    # ── original video path unchanged ──
     video_url = _pick_video(medias)
     if not video_url:
         return None
+    title = data.get('title') or 'video'
     return {
         'url':       video_url,
         'title':     title,
@@ -148,13 +120,11 @@ def fetch_via_rapidapi(url, fmt='video'):
         'thumbnail': data.get('thumbnail'),
     }
 
-# ── fetch_via_ytdlp — video path IDENTICAL to original ───────────────────────
-def fetch_via_ytdlp(url, fmt='video'):
+def fetch_via_ytdlp(url):
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        'format': 'bestaudio[ext=m4a]/bestaudio' if fmt == 'audio'
-                  else 'best[ext=mp4][protocol=https]/best[ext=mp4]/best[protocol=https]/best',
+        'format': 'best[ext=mp4][protocol=https]/best[ext=mp4]/best[protocol=https]/best',
         'noplaylist': True,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -177,17 +147,6 @@ def fetch_via_ytdlp(url, fmt='video'):
     if not video_url:
         return None
     title = info.get('title') or info.get('id') or 'video'
-
-    if fmt == 'audio':
-        ext = info.get('ext', 'm4a')
-        return {
-            'url':       video_url,
-            'title':     title,
-            'filename':  _make_filename(title, info.get('id', 'audio'), ext),
-            'thumbnail': info.get('thumbnail'),
-        }
-
-    # ── original video return unchanged ──
     return {
         'url':       video_url,
         'title':     title,
@@ -210,21 +169,18 @@ def get_video():
 
     data = request.get_json(silent=True) or {}
     raw  = data.get('url', '').strip()
-    fmt  = data.get('format', 'video')
-    if fmt not in ('video', 'audio'):
-        fmt = 'video'
     if not raw:
         return jsonify({'error': 'URL inahitajika'}), 400
     url    = extract_url(raw)
     result = None
     if RAPIDAPI_KEY:
         try:
-            result = fetch_via_rapidapi(url, fmt)
+            result = fetch_via_rapidapi(url)
         except Exception as e:
             print(f'[RapidAPI] Outer exception: {e}')
     if not result:
         try:
-            result = fetch_via_ytdlp(url, fmt)
+            result = fetch_via_ytdlp(url)
         except yt_dlp.utils.DownloadError as e:
             return jsonify({'error': str(e)}), 422
         except Exception as e:
