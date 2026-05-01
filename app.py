@@ -32,7 +32,10 @@ def get_clickpesa_token():
         return _cp_token_cache['token']
     resp = http.post(
         f'{CLICKPESA_BASE_URL}/third-parties/generate-token',
-        headers={'api-key': CLICKPESA_API_KEY, 'client-id': CLICKPESA_CLIENT_ID},
+        headers={
+            'api-key':   CLICKPESA_API_KEY,
+            'client-id': CLICKPESA_CLIENT_ID,
+        },
         timeout=15,
     )
     resp.raise_for_status()
@@ -53,6 +56,7 @@ def extract_url(text):
     match = re.search(r'https?://[^\s]+', text)
     return match.group(0).rstrip("'\"") if match else text.strip()
 
+# ── UNCHANGED from original ───────────────────────────────────────────────────
 def _make_filename(title, fallback='video', ext='mp4'):
     safe = ''.join(c for c in (title or fallback) if c.isalnum() or c in ' _-').strip()[:60]
     return f"{safe or fallback}.{ext}"
@@ -80,6 +84,7 @@ def _pick_video(medias):
             return m.get('url')
     return None
 
+# ── NEW: audio picker (does not affect video path) ────────────────────────────
 def _pick_audio(medias):
     for ext_pref in ('mp3', 'm4a', 'aac'):
         for m in medias:
@@ -92,6 +97,7 @@ def _pick_audio(medias):
             return m['url'], ext
     return None, None
 
+# ── fetch_via_rapidapi — video path IDENTICAL to original ─────────────────────
 def fetch_via_rapidapi(url, fmt='video'):
     if not RAPIDAPI_KEY:
         return None
@@ -119,6 +125,7 @@ def fetch_via_rapidapi(url, fmt='video'):
     if not medias:
         return None
     title = data.get('title') or 'video'
+
     if fmt == 'audio':
         audio_url, audio_ext = _pick_audio(medias)
         if not audio_url:
@@ -129,26 +136,25 @@ def fetch_via_rapidapi(url, fmt='video'):
             'filename':  _make_filename(title, 'audio', audio_ext),
             'thumbnail': data.get('thumbnail'),
         }
-    else:
-        video_url = _pick_video(medias)
-        if not video_url:
-            return None
-        return {
-            'url':       video_url,
-            'title':     title,
-            'filename':  _make_filename(title),
-            'thumbnail': data.get('thumbnail'),
-        }
 
+    # ── original video path unchanged ──
+    video_url = _pick_video(medias)
+    if not video_url:
+        return None
+    return {
+        'url':       video_url,
+        'title':     title,
+        'filename':  _make_filename(title),
+        'thumbnail': data.get('thumbnail'),
+    }
+
+# ── fetch_via_ytdlp — video path IDENTICAL to original ───────────────────────
 def fetch_via_ytdlp(url, fmt='video'):
-    if fmt == 'audio':
-        fmt_str = 'bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio'
-    else:
-        fmt_str = 'best[ext=mp4][protocol=https]/best[ext=mp4]/best[protocol=https]/best'
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        'format': fmt_str,
+        'format': 'bestaudio[ext=m4a]/bestaudio' if fmt == 'audio'
+                  else 'best[ext=mp4][protocol=https]/best[ext=mp4]/best[protocol=https]/best',
         'noplaylist': True,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -162,21 +168,30 @@ def fetch_via_ytdlp(url, fmt='video'):
         info = ydl.extract_info(url, download=False)
     if not info:
         return None
-    stream_url = info.get('url')
-    if not stream_url:
+    video_url = info.get('url')
+    if not video_url:
         for f in reversed(info.get('formats') or []):
             if f.get('url') and f.get('protocol', '').startswith('http'):
-                stream_url = f['url']
+                video_url = f['url']
                 break
-    if not stream_url:
+    if not video_url:
         return None
     title = info.get('title') or info.get('id') or 'video'
-    ext   = info.get('ext', 'm4a' if fmt == 'audio' else 'mp4')
-    fallback = info.get('id', 'audio' if fmt == 'audio' else 'video')
+
+    if fmt == 'audio':
+        ext = info.get('ext', 'm4a')
+        return {
+            'url':       video_url,
+            'title':     title,
+            'filename':  _make_filename(title, info.get('id', 'audio'), ext),
+            'thumbnail': info.get('thumbnail'),
+        }
+
+    # ── original video return unchanged ──
     return {
-        'url':       stream_url,
+        'url':       video_url,
         'title':     title,
-        'filename':  _make_filename(title, fallback, ext),
+        'filename':  _make_filename(title, info.get('id', 'video')),
         'thumbnail': info.get('thumbnail'),
     }
 
@@ -193,9 +208,9 @@ def get_video():
     auth = check_app_key()
     if auth: return auth
 
-    data   = request.get_json(silent=True) or {}
-    raw    = data.get('url', '').strip()
-    fmt    = data.get('format', 'video')   # 'video' or 'audio'
+    data = request.get_json(silent=True) or {}
+    raw  = data.get('url', '').strip()
+    fmt  = data.get('format', 'video')
     if fmt not in ('video', 'audio'):
         fmt = 'video'
     if not raw:
@@ -241,9 +256,13 @@ def initiate_payment():
 
     try:
         token = get_clickpesa_token()
+        print(f'[ClickPesa] Got token successfully')
         resp  = http.post(
             f'{CLICKPESA_BASE_URL}/third-parties/payments/initiate-ussd-push-request',
-            headers={'Authorization': token, 'Content-Type': 'application/json'},
+            headers={
+                'Authorization': token,
+                'Content-Type':  'application/json',
+            },
             json={
                 'amount':         str(amount),
                 'currency':       'TZS',
@@ -253,10 +272,13 @@ def initiate_payment():
             timeout=30,
         )
         print(f'[ClickPesa] HTTP {resp.status_code}: {resp.text[:300]}')
+
         if resp.status_code not in (200, 201, 202):
             _payments[reference]['status'] = 'failed'
             return jsonify({'error': 'Imeshindwa kutuma ombi la malipo. Angalia namba ya simu na jaribu tena.'}), 502
+
         return jsonify({'reference': reference})
+
     except Exception as e:
         print(f'[ClickPesa] Exception: {e}')
         _payments[reference]['status'] = 'failed'
@@ -267,8 +289,11 @@ def payment_callback():
     data = request.get_json(silent=True) or {}
     print(f'[ClickPesa Callback] {data}')
     reference = (
-        data.get('orderReference') or data.get('orderId') or
-        data.get('order_id')       or data.get('reference') or ''
+        data.get('orderReference')
+        or data.get('orderId')
+        or data.get('order_id')
+        or data.get('reference')
+        or ''
     )
     status = (data.get('status') or '').upper()
     if reference in _payments:
@@ -279,16 +304,3 @@ def payment_callback():
             _payments[reference]['status'] = 'failed'
             print(f'[Payment] {reference} FAILED ({status})')
     return jsonify({'received': True})
-
-@app.route('/api/payment/status/<reference>', methods=['GET'])
-def payment_status(reference):
-    auth = check_app_key()
-    if auth: return auth
-    payment = _payments.get(reference)
-    if not payment:
-        return jsonify({'error': 'Marejeleo hayapatikani'}), 404
-    return jsonify({'status': payment['status'], 'tokens': payment.get('tokens', 0)})
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
